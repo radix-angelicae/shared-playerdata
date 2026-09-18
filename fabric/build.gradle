@@ -1,0 +1,60 @@
+plugins {
+    id 'java'
+    id 'fabric-loom'
+}
+
+def MATRIX = rootProject.ext.matrix
+def MC = rootProject.ext.mcVersion
+def fabricLoaderVersion = MATRIX.getProperty("${MC}.fabricLoader", '0.15.11')
+def javaLevel = Integer.parseInt(MATRIX.getProperty("${MC}.java", '17'))
+// pack.mcmeta 的 pack_format 随 MC 版本变化；缺了它游戏日志会刷
+// "Missing metadata in pack mod:sharedplayerdata"
+def packFormat = MATRIX.getProperty("${MC}.packFormat", '15')
+
+// 产物名：sharedplayerdata-<mc版本>-fabric-<模组版本>.jar
+// archivesBaseName 兼容 Gradle 7（1.19.2 用的 FG5 需要 Gradle 7）；
+// base.archivesName 是 Gradle 8.4+ 的新写法，Loom 认这个，能用就优先设。
+def jarBaseName = "sharedplayerdata-${MC}-fabric"
+archivesBaseName = jarBaseName
+if (org.gradle.util.GradleVersion.current() >= org.gradle.util.GradleVersion.version('8.4')) {
+    base { archivesName = jarBaseName }
+}
+
+// 核心代码以源码形式并入，避免 jar-in-jar / shadow 之类的额外插件
+sourceSets {
+    main {
+        java {
+            srcDirs = ['src/main/java', '../core/src/main/java', '../mcbridge/src/main/java']
+        }
+    }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(javaLevel)
+    }
+}
+
+repositories {
+    mavenCentral()
+    maven { name = 'Fabric';  url = 'https://maven.fabricmc.net/' }
+    maven { name = 'Mojang';  url = 'https://libraries.minecraft.net/' }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${MC}"
+    mappings loom.officialMojangMappings()
+    modImplementation "net.fabricmc:fabric-loader:${fabricLoaderVersion}"
+}
+
+processResources {
+    inputs.property 'version', project.version
+    inputs.property 'mc', MC
+    inputs.property 'packFormat', packFormat
+    filesMatching('fabric.mod.json') {
+        expand 'mod_version': project.version, 'minecraft_dependency': MC
+    }
+    filesMatching('pack.mcmeta') {
+        expand 'pack_format': packFormat
+    }
+}

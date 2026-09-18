@@ -1,0 +1,7 @@
+// 一个极小的、不依赖任何插件的独立 Gradle 构建。
+// 唯一用途：解析 ../../matrix.properties，把「MC版本|加载器|ok」逐行打印出来，
+// 供 build.bat 循环读取。
+//
+// 之所以不走 findstr / grep：它们在 LF 与 CRLF 混用、行尾带 CR 时行为不可靠，
+// 而 Gradle(Groovy) 的 trim() 能干净地吃掉这些空白与控制字符。
+rootProject.name = 'spd-matrix'

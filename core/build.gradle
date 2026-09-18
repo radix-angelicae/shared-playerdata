@@ -1,0 +1,23 @@
+plugins {
+    id 'java'
+}
+
+base {
+    archivesName = 'sharedplayerdata-core'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+// 核心模块不依赖 Minecraft，可以单独打成命令行工具：
+//   java -jar sharedplayerdata-core.jar <.minecraft目录> <你的UUID>
+jar {
+    manifest {
+        attributes(
+                'Main-Class': 'org.sharedplayerdata.core.Main'
+        )
+    }
+}

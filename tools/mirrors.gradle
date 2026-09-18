@@ -1,0 +1,38 @@
+// =============================================================================
+//  可选的镜像加速脚本（Gradle init script）
+//
+//  用法（build.bat 默认启用）：
+//      gradle ... -I tools/mirrors.gradle
+//  关闭：
+//      build.bat --no-mirrors
+//
+//  作用：把 Maven Central 与 Gradle 插件门户换成国内镜像，加速依赖下载。
+//  Fabric / Forge / NeoForge 的官方仓库保持不动（镜像里通常没有它们的包）；
+//  找不到时 Gradle 会自动回落到官方仓库，不会导致构建失败。
+// =============================================================================
+
+def CENTRAL_MIRROR = 'https://maven.aliyun.com/repository/public'
+def CENTRAL_MIRROR_BACKUP = 'https://mirrors.cloud.tencent.com/nexus/repository/maven-public/'
+def PLUGIN_MIRROR = 'https://maven.aliyun.com/repository/gradle-plugin'
+
+// settings 阶段：影响 settings.gradle 里的 pluginManagement（Loom / ForgeGradle 等插件）
+beforeSettings { settings ->
+    settings.pluginManagement {
+        repositories {
+            maven { url PLUGIN_MIRROR }
+            gradlePluginPortal()
+        }
+    }
+}
+
+allprojects {
+    buildscript {
+        repositories {
+            maven { url PLUGIN_MIRROR }
+        }
+    }
+    repositories {
+        maven { url CENTRAL_MIRROR }
+        maven { url CENTRAL_MIRROR_BACKUP }
+    }
+}

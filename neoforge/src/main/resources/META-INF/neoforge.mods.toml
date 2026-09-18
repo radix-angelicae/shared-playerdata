@@ -1,0 +1,29 @@
+modLoader = "javafml"
+loaderVersion = "[1,)"
+
+# 注意：license 属于「非模组特定属性」，必须写在文件顶层、[[mods]] 之前。
+# 写进 [[mods]] 段里 NeoForge 读不到，启动时会报 Missing license。
+license = "MIT"
+
+[[mods]]
+modId = "sharedplayerdata"
+version = "${mod_version}"
+displayName = "Shared Player Data"
+authors = "Shared Player Data contributors"
+description = '''
+打开别人给你的存档时，自动读取你自己的玩家数据（背包/位置/经验/进度），而不是房主的。
+'''
+
+[[dependencies.sharedplayerdata]]
+    modId = "neoforge"
+    type = "required"
+    versionRange = "[1,)"
+    ordering = "NONE"
+    side = "CLIENT"
+
+[[dependencies.sharedplayerdata]]
+    modId = "minecraft"
+    type = "required"
+    versionRange = "[${mc}]"
+    ordering = "NONE"
+    side = "CLIENT"

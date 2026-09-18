@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "sharedplayerdata",
+  "version": "${mod_version}",
+  "name": "Shared Player Data",
+  "description": "打开别人给你的存档时，自动读取你自己的玩家数据（背包/位置/经验/进度），而不是房主的。",
+  "authors": [
+    "you"
+  ],
+  "contact": {},
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "org.sharedplayerdata.fabric.SharedPlayerDataFabric"
+    ]
+  },
+  "depends": {
+    "minecraft": "${minecraft_dependency}",
+    "fabricloader": ">=0.14"
+  }
+}

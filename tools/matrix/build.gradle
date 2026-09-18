@@ -1,0 +1,96 @@
+// 矩阵解析器。零插件、零依赖，配置阶段几乎不耗时。
+//
+//   gradle -p tools/matrix -q printMatrix
+//   gradle -p tools/matrix -q printMatrix -PmcFilter=1.20.1 -PloaderFilter=fabric
+//   gradle -p tools/matrix -q showMatrix
+//
+// 数据行走 stdout： mc|loader|gradleVersion|ok
+//
+// 每行末尾多打印一个 "|ok" 占位：万一 Windows 的 for /f 把行尾 CR 留在最后一个
+// token 上，CR 只会挂在这个占位符上，不会污染 MC 版本和加载器名。
+
+Properties loadMatrix() {
+    Properties p = new Properties()
+    File f = file('../../matrix.properties')
+    if (!f.isFile()) {
+        throw new GradleException("matrix.properties not found at " + f.absolutePath)
+    }
+    f.withInputStream { p.load(it) }
+    return p
+}
+
+// Gradle 版本查找顺序：<mc>.<loader>.gradle  ->  <mc>.gradle  ->  default.gradle
+String gradleVersionFor(Properties p, String mc, String loader) {
+    String v
+    v = p.getProperty(mc + '.' + loader + '.gradle')
+    if (v != null && !v.trim().isEmpty()) { return v.trim() }
+    v = p.getProperty(mc + '.gradle')
+    if (v != null && !v.trim().isEmpty()) { return v.trim() }
+    v = p.getProperty('default.gradle')
+    if (v != null && !v.trim().isEmpty()) { return v.trim() }
+    return '8.10'
+}
+
+tasks.register('printMatrix') {
+    doLast {
+        Properties p = loadMatrix()
+
+        String mcFilter = (project.findProperty('mcFilter') ?: '').toString().trim()
+        String loaderFilter = (project.findProperty('loaderFilter') ?: '').toString().trim()
+
+        List<String> versions = (p.getProperty('mc.versions') ?: '')
+                .trim().split(/\s+/).findAll { !it.isEmpty() }
+
+        if (versions.isEmpty()) {
+            System.err.println("[matrix] ERROR: mc.versions is empty in matrix.properties")
+            throw new GradleException("mc.versions is empty — nothing to build")
+        }
+
+        int combos = 0
+        versions.each { String mc ->
+            if (mcFilter && mc != mcFilter) return
+            List<String> loaders = (p.getProperty(mc + '.loaders') ?: '')
+                    .trim().split(/\s+/).findAll { !it.isEmpty() }
+            if (loaders.isEmpty()) {
+                System.err.println("[matrix] WARNING: no loaders configured for " + mc + ", skipped")
+                return
+            }
+            loaders.each { String loader ->
+                if (loaderFilter && loader != loaderFilter) return
+                String gv = gradleVersionFor(p, mc, loader)
+                println "${mc}|${loader}|${gv}|ok"
+                combos++
+            }
+        }
+
+        if (combos == 0) {
+            String hint = "filter: mc='${mcFilter}' loader='${loaderFilter}'"
+            System.err.println("[matrix] ERROR: no build combination matched. ${hint}")
+            throw new GradleException("no build combination matched (${hint})")
+        }
+    }
+}
+
+tasks.register('printDefaultGradle') {
+    doLast {
+        Properties p = loadMatrix()
+        String v = p.getProperty('default.gradle')
+        println((v == null || v.trim().isEmpty()) ? '8.10' : v.trim())
+    }
+}
+
+// 调试用：把解析到的完整矩阵打印出来
+tasks.register('showMatrix') {
+    doLast {
+        Properties p = loadMatrix()
+        println 'default.gradle = ' + gradleVersionFor(p, 'x', 'y')
+        println 'mc.versions = ' + p.getProperty('mc.versions')
+        (p.getProperty('mc.versions') ?: '').trim().split(/\s+/).findAll { !it.isEmpty() }.each { mc ->
+            List<String> loaders = (p.getProperty(mc + '.loaders') ?: '').trim().split(/\s+/).findAll { !it.isEmpty() }
+            println "${mc} -> loaders=${loaders} java=${p.getProperty(mc + '.java')}" +
+                    " forge=${p.getProperty(mc + '.forge')} neoforge=${p.getProperty(mc + '.neoforge')}" +
+                    " loom=${p.getProperty(mc + '.loom')}"
+            loaders.each { l -> println "      ${mc}/${l} -> gradle ${gradleVersionFor(p, mc, l)}" }
+        }
+    }
+}

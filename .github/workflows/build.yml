@@ -1,0 +1,141 @@
+# =============================================================================
+#  Shared Player Data —— CI 构建
+#
+#  每个「MC 版本 + 加载器」组合跑一个独立 job，全部并行。
+#  单个 job 只编译一个组合，所以不会撞上 GitHub Actions 的 6 小时上限，
+#  而全量 18 个组合在几分钟内就能跑完（取决于缓存命中情况）。
+#
+#  用 windows-latest：本项目的构建脚本只有 Windows 版（build.bat +
+#  fetch-gradle.ps1），用 Windows runner 可以保证 CI 与本地行为完全一致。
+#
+#  产物（jar）会作为 artifact 上传，保留 14 天。
+# =============================================================================
+
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  # 手动触发：可选填一个 MC 版本，只构建该版本的全部组合
+  workflow_dispatch:
+    inputs:
+      mc:
+        description: 'MC version to build (leave empty for all)'
+        required: false
+        default: ''
+
+# 同一分支上再推送时，取消仍在跑的旧任务，省额度
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # 手动触发且指定了版本时，跳过不匹配的组合
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      inputs.mc == '' ||
+      inputs.mc == matrix.mc
+
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    strategy:
+      # 一个组合失败不取消其他组合——正好用来看清到底是哪个版本有问题
+      fail-fast: false
+      matrix:
+        include:
+          - { mc: '1.19.2',  loader: 'forge' }
+          - { mc: '1.19.4',  loader: 'forge' }
+          - { mc: '1.20.1',  loader: 'fabric' }
+          - { mc: '1.20.1',  loader: 'forge' }
+          - { mc: '1.20.4',  loader: 'fabric' }
+          - { mc: '1.20.4',  loader: 'forge' }
+          - { mc: '1.20.4',  loader: 'neoforge' }
+          - { mc: '1.20.6',  loader: 'fabric' }
+          - { mc: '1.20.6',  loader: 'forge' }
+          - { mc: '1.20.6',  loader: 'neoforge' }
+          - { mc: '1.21.1',  loader: 'fabric' }
+          - { mc: '1.21.1',  loader: 'forge' }
+          - { mc: '1.21.1',  loader: 'neoforge' }
+          - { mc: '1.21.5',  loader: 'fabric' }
+          - { mc: '1.21.5',  loader: 'forge' }
+          - { mc: '1.21.5',  loader: 'neoforge' }
+          - { mc: '1.21.11', loader: 'forge' }
+          - { mc: '1.21.11', loader: 'neoforge' }
+
+    name: ${{ matrix.mc }} / ${{ matrix.loader }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 1.19.2 ~ 1.20.4 需要 JDK 17；1.20.6 / 1.21.x 需要 JDK 21。
+      # 两个都装，Gradle 的 toolchain 会自己挑。
+      - name: Set up JDK 17 and 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            17
+            21
+
+      # 缓存 Gradle 分发包——每个 job 都要用，不缓存的话每个组合都要重新下 130MB
+      - name: Cache Gradle distribution
+        uses: actions/cache@v4
+        with:
+          path: gradle-dist
+          key: gradle-dist-v1
+
+      # 缓存依赖。Loom 反编译出来的 Minecraft、Forge 的 userdev 产物都在
+      # ~/.gradle 下，这是最耗时的一步，缓存命中能省十几分钟。
+      # 按 MC 版本分开存，避免不同版本互相挤掉。
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ matrix.mc }}-${{ matrix.loader }}-${{ hashFiles('matrix.properties', 'gradle.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-${{ matrix.mc }}-${{ matrix.loader }}-
+            gradle-${{ runner.os }}-${{ matrix.mc }}-
+            gradle-${{ runner.os }}-
+
+      # 本机构建走 127.0.0.1:10808 代理（见 gradle.properties），
+      # 但 CI runner 有直连外网，配了代理反而连不上。这里把代理行去掉。
+      - name: Remove local proxy settings
+        shell: pwsh
+        run: |
+          $f = 'gradle.properties'
+          $kept = Get-Content $f | Where-Object { $_ -notmatch 'proxyHost|proxyPort' }
+          Set-Content -Path $f -Value $kept -Encoding UTF8
+          Write-Host "gradle.properties proxy lines removed"
+          Get-Content $f | Select-String -Pattern 'proxy' | ForEach-Object { Write-Host "still there: $_" }
+
+      - name: Build ${{ matrix.mc }} / ${{ matrix.loader }}
+        run: build.bat ${{ matrix.mc }} ${{ matrix.loader }} --no-proxy --no-pause
+        shell: cmd
+
+      - name: Upload jar
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sharedplayerdata-${{ matrix.mc }}-${{ matrix.loader }}
+          path: build/artifacts/*.jar
+          if-no-files-found: warn
+          retention-days: 14
+
+      # 失败时把 Gradle 报告也留一份，方便直接下载查看
+      - name: Upload build reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-${{ matrix.mc }}-${{ matrix.loader }}
+          path: |
+            **/build/reports/**
+            **/*.log
+          if-no-files-found: ignore
+          retention-days: 7
