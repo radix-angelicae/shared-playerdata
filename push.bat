@@ -32,6 +32,8 @@ cd /d "%~dp0"
 
 if not defined SPD_REPO_URL set "SPD_REPO_URL=https://github.com/radix-angelicae/shared-playerdata.git"
 if not defined SPD_BRANCH set "SPD_BRANCH=main"
+@rem Set SPD_SKIP_CI=0 to stop appending "[skip ci]" to the commit message.
+if not defined SPD_SKIP_CI set "SPD_SKIP_CI=1"
 
 set "DRY_RUN=0"
 set "MSG="
@@ -187,7 +189,20 @@ if not defined MSG set "MSG=Update shared-playerdata"
 
 :do_commit
 echo.
-git --no-pager commit -m "%MSG%"
+@rem Append "[skip ci]". GitHub Actions reads this from the commit message and
+@rem skips any push-triggered workflow. The repo currently has no push trigger
+@rem (see .github/workflows/build.yml), so this is belt-and-braces: if push
+@rem triggers are ever switched back on, ordinary commits still will not start
+@rem a build. Set SPD_SKIP_CI=0 to leave the message untouched.
+@rem Built as a plain SET outside any ( ) block, so a message containing
+@rem parentheses cannot break the block.
+if not "%SPD_SKIP_CI%"=="0" goto :with_skip
+set "CMT=%MSG%"
+goto :run_commit
+:with_skip
+set "CMT=%MSG% [skip ci]"
+:run_commit
+git --no-pager commit -m "%CMT%"
 if not errorlevel 1 goto :committed
 echo [ERROR] commit failed. If the message contains quotes, pass it as:
 echo         push.bat "your message"

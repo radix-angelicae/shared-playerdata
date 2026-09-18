@@ -123,7 +123,9 @@ Minecraft **26.1** 起官方改了机制：`level.dat` 里的 `Player` 复合标
 
 ```
 shared-playerdata/
-├── .github/workflows/build.yml  ← GitHub Actions：18 个组合并行构建
+├── .github/workflows/build.yml  ← GitHub Actions：手动触发，只跑已验证组合
+├── build.bat              ← 一键构建（Windows）
+├── build.sh               ← 一键构建（Linux / macOS）
 ├── push.bat               ← 一键提交 + 推送到 GitHub（Windows）
 ├── matrix.properties      ← 版本矩阵：全部 MC 版本 / 加载器 / 工具链版本号（唯一来源）
 ├── settings.gradle        ← 根据当前 MC 版本决定 Loom / ForgeGradle / NeoGradle 插件版本
@@ -152,9 +154,13 @@ shared-playerdata/
 ├── tools/
 │   ├── update_versions.py ← 从 Maven 拉最新工具链版本号，改写 matrix.properties
 │   ├── jcheck.py          ← 静态体检（final 赋值 / 括号 / 漏定义方法 / 漏 import），不需 JDK
+│   ├── fetch-gradle.ps1   ← 下载 Gradle（Windows，供 build.bat 调用）
+│   ├── fetch-gradle.sh    ← 下载 Gradle（Linux / macOS，供 build.sh 调用）
 │   ├── inspect-jar.bat    ← 打印 jar 里的元数据，确认 license 等字段
-│   └── selftest.bat       ← 只跑核心逻辑自测（不需要 Gradle / Minecraft）
-├── build.bat              ← 一键构建
+│   ├── selftest.bat       ← 只跑核心逻辑自测（不需要 Gradle / Minecraft）
+│   └── selftest.sh        ← 同上，Linux / macOS 版
+├── build.bat              ← 一键构建（Windows）
+├── build.sh               ← 一键构建（Linux / macOS）
 └── build/artifacts/       ← 构建产物（成功一个放一个）
 ```
 
@@ -230,31 +236,47 @@ python3 tools/update_versions.py --check  # 只看会改什么，不落盘
 
 取不到的项会原样保留并提示，不会把文件写坏。
 
-### 3. 一键构建（Windows 直接双击 `build.bat`）
+### 3. 一键构建
 
-```bat
-build.bat                     :: 全部组合
-build.bat 1.20.1              :: 只构建 1.20.1 的所有加载器
-build.bat 1.20.1 fabric       :: 只构建 1.20.1 + Fabric
-build.bat --list              :: 只列出将要构建的组合，不构建
-build.bat --update-versions   :: 先校版本号再构建
-build.bat --wrapper           :: 生成标准 gradlew / gradlew.bat
-build.bat --no-mirrors        :: 不使用国内镜像
-build.bat --stacktrace        :: 失败时打完整堆栈
-build.bat --no-pause          :: 结束时不等按键（CI 用）
-build.bat --no-stop           :: 构建后保留 Gradle daemon（默认会停掉）
-build.bat --stop              :: 只停掉所有 Gradle daemon 并退出，不构建
+Windows 直接双击 `build.bat`（或命令行运行）；Linux / macOS 用 `./build.sh`（需先
+`chmod +x build.sh`，或用 `bash build.sh`）。两者的参数与流程完全一致：
+
+```bash
+build.sh                      # 全部组合
+build.sh 1.20.1               # 只构建 1.20.1 的所有加载器
+build.sh 1.20.1 fabric        # 只构建 1.20.1 + Fabric
+build.sh --list               # 只列出将要构建的组合，不构建
+build.sh --update-versions    # 先校版本号再构建
+build.sh --wrapper            # 生成标准 gradlew
+build.sh --no-mirrors         # 不使用国内镜像
+build.sh --stacktrace         # 失败时打完整堆栈
+build.sh --no-stop            # 构建后保留 Gradle daemon（默认会停掉）
+build.sh --stop               # 只停掉所有 Gradle daemon 并退出，不构建
 ```
 
-先跑一次 `build.bat --list` 是个好习惯：它会打印解析到的组合清单，一眼确认
+> `build.bat` 另有 `--no-pause`（结束时不等按键，CI 用）和 `--no-proxy`。
+> `--no-proxy` 两个脚本都支持。`--no-pause` 只在批处理里有意义，`build.sh`
+> 也接受它但不做任何事，这样同一条 CI 命令在两个平台上不用改。
+
+先跑一次 `build.sh --list` 是个好习惯：它会打印解析到的组合清单，一眼确认
 `matrix.properties` 有没有被正确读到，再决定要不要全量构建。
 
-**构建结束后会自动停掉 Gradle daemon**，后台不会残留 `java.exe`。
+**构建结束后会自动停掉 Gradle daemon**，后台不会残留 `java` 进程。
 （`gradle --stop` 只作用于同版本的 daemon，所以脚本会按本次用到的版本逐个停。
-历史遗留的进程可以用 `build.bat --stop` 一次性清掉。）
+历史遗留的进程可以用 `build.sh --stop` 一次性清掉。）
+`build.sh` 用 `trap ... EXIT` 兜底，**中途 Ctrl+C 也会清理**；`build.bat` 无此能力
+（Windows 批处理拦不住 Ctrl+C），需要清理时用 `build.bat --stop`。
 
-**本项目只在 Windows 上构建与验证，只提供 `build.bat`，不提供也不需要 shell 脚本。**
-Linux / macOS 用户请自行参照 `build.bat` 的逻辑改写（流程完全一致）。
+| | Windows | Linux / macOS |
+|---|---|---|
+| 构建 | `build.bat` | `./build.sh` |
+| Gradle 下载 | `tools/fetch-gradle.ps1` | `tools/fetch-gradle.sh` |
+| 核心自测 | `tools\selftest.bat` | `./tools/selftest.sh` |
+| 提交 | `push.bat` | 用 git 命令，或参照 `push.bat` |
+
+三个 `.sh` 脚本都要求 **LF 行尾**——CRLF 的 shebang 会让 Linux 报
+`bad interpreter`。仓库里的 `.gitattributes` 已用 `*.sh text eol=lf` 钉死，
+即使在 Windows 上 `core.autocrlf=true` 也不会被改成 CRLF。
 
 脚本会自动完成：**检查 JDK → 没有 Gradle 就下载 → 逐个组合构建 → 收集产物**。
 双击运行时窗口结束前会等你按一下键，方便看结果；命令行调用则直接返回。
@@ -548,15 +570,34 @@ push.bat --dry-run        :: 只看会提交什么，不提交
 > 覆盖本地的，避免两个互不相干的提交历史在 LICENSE 上冲突。想保留自己的版权，
 > 首次推送成功后改 `LICENSE` 再提交一次即可。
 
-### GitHub Actions 自动构建
+### GitHub Actions 构建（默认不自动跑）
 
-`.github/workflows/build.yml` 在 push / PR 到 `main` 时自动触发，**每个「MC 版本 + 加载器」
-组合一个独立 job 并行跑**（18 个），产物 jar 作为 artifact 上传，保留 14 天。
+`.github/workflows/build.yml` **只由手动触发**，push / PR 不会自动跑。
+
+原因是 `matrix.properties` 里的 Forge / NeoForge / Loom 版本号大多是按经验填的，
+未经实机构建验证，自动跑很容易大面积报红。等各组合在本地验证过之后，
+把 workflow 里 `push` / `pull_request` 那两行的注释去掉即可恢复自动触发。
+
+手动触发：Actions → Build → Run workflow，两个可选输入：
+
+| 输入 | 说明 |
+|---|---|
+| `mc` | 只构建某个 MC 版本（如 `1.21.5`），留空 = 全部**已选中的**组合 |
+| `full` | 勾选后连**未验证**的组合一起构建；不勾 = 只跑 `safe: true` 的组合 |
+
+`safe: true` 标的是本机已产出过 jar 的组合（当前 3 个：1.20.1/forge、1.21.1/fabric、
+1.21.1/neoforge）。每验证通一个，就把 `matrix` 里对应那行的 `safe` 改成 `true`。
+
+> **坑**：`matrix` 上下文**不能**用在 job 级 `if` 里（`if` 在矩阵展开之前求值），
+> 否则整个 workflow 在解析阶段就报 `Unrecognized named-value: 'matrix'`，
+> 18 个 job 全部失败。所以组合过滤做成了第一个 step（gate），
+> 产出 `run=true/false` 给后续 step 用。
 
 几个实现上的取舍：
 
-* **用 `windows-latest`**：本项目的构建脚本只有 Windows 版（`build.bat` + `fetch-gradle.ps1`），
-  用 Windows runner 才能保证 CI 与本地行为一致。
+* **用 `windows-latest`**：本项目虽然也提供了 `build.sh`，但只在 Windows 上做过
+  实机构建验证；用 Windows runner 能保证 CI 与主要开发环境一致。
+  （`build.sh` 的参数与 `build.bat` 完全对齐，换 runner 只需要改这一行。）
 * **CI 里去掉代理**：`gradle.properties` 里的 `systemProp.*.proxy*` 指向 `127.0.0.1:10808`
   （你本机的代理），runner 上没有。workflow 会先删掉这些行，
   再用 `build.bat <mc> <loader> --no-proxy --no-pause` 构建。
@@ -566,8 +607,8 @@ push.bat --dry-run        :: 只看会提交什么，不提交
   混在一起会互相挤掉。
 * **`fail-fast: false`**：某个组合失败不取消其他组合，正好一眼看出是哪几个版本有问题。
 
-手动触发时可以只构建某个版本：Actions → Build → Run workflow → 填 `mc`（例如 `1.20.1`），
-留空则全量。
+验证版本号时最省时间的做法：本机改完 `matrix.properties`，提交后到 Actions →
+Build → Run workflow，`mc` 填那一个版本即可只重试它，不必等全量跑完。
 
 ## 十三、许可
 

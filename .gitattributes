@@ -23,6 +23,12 @@
 *.cmd  -text
 *.ps1  -text
 
+# Shell scripts: ALWAYS LF, even on a Windows checkout with core.autocrlf=true.
+# A CRLF shebang line ("#!/usr/bin/env bash\r") makes Linux exec the interpreter
+# as "/usr/bin/env bash\r" and fail with "bad interpreter". This rule overrides
+# the eol=lf default explicitly so it also survives autocrlf on Windows.
+*.sh   text eol=lf
+
 # Build outputs and binaries - never touch, never diff as text.
 *.jar  binary
 *.zip  binary
