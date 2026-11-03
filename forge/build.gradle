@@ -1,0 +1,78 @@
+plugins {
+    id 'java'
+    id 'net.minecraftforge.gradle'
+}
+
+def MATRIX = rootProject.ext.matrix
+def MC = rootProject.ext.mcVersion
+def forgeVersion = MATRIX.getProperty("${MC}.forge")
+def loaderRange = MATRIX.getProperty("${MC}.forgeLoaderRange", '[40,)')
+def javaLevel = Integer.parseInt(MATRIX.getProperty("${MC}.java", '17'))
+def packFormat = MATRIX.getProperty("${MC}.packFormat", '15')
+
+if (forgeVersion == null) {
+    throw new GradleException("matrix.properties 缺少 ${MC}.forge（Forge 版本号）")
+}
+
+// 产物名：sharedplayerdata-<mc版本>-forge-<模组版本>.jar
+def jarBaseName = "sharedplayerdata-${MC}-forge"
+archivesBaseName = jarBaseName
+if (org.gradle.util.GradleVersion.current() >= org.gradle.util.GradleVersion.version('8.4')) {
+    base { archivesName = jarBaseName }
+}
+
+sourceSets {
+    main {
+        java {
+            srcDirs = ['src/main/java', '../core/src/main/java', '../mcbridge/src/main/java']
+        }
+    }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(javaLevel)
+    }
+}
+
+// 使用 Mojang 官方映射，这样桥接层可以直接写 Minecraft.getUser() 这类名字，
+// ForgeGradle 会在打包时自动 reobf 成运行时使用的 SRG 名。
+minecraft {
+    mappings channel: 'official', version: MC
+}
+
+repositories {
+    mavenCentral()
+    maven { name = 'Forge'; url = 'https://maven.minecraftforge.net/' }
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${MC}-${forgeVersion}"
+}
+
+processResources {
+    inputs.property 'version', project.version
+    inputs.property 'mc', MC
+    inputs.property 'loaderRange', loaderRange
+    inputs.property 'packFormat', packFormat
+    filesMatching('META-INF/mods.toml') {
+        expand 'mod_version': project.version, 'mc': MC, 'loader_range': loaderRange
+    }
+    filesMatching('pack.mcmeta') {
+        expand 'pack_format': packFormat
+    }
+}
+
+jar {
+    manifest {
+        attributes(
+                'Specification-Title'     : 'sharedplayerdata',
+                'Specification-Vendor'    : 'sharedplayerdata',
+                'Specification-Version'   : '1',
+                'Implementation-Title'    : project.name,
+                'Implementation-Version'  : project.version,
+                'Implementation-Vendor'   : 'sharedplayerdata'
+        )
+    }
+    finalizedBy 'reobfJar'
+}

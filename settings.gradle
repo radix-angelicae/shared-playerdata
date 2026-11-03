@@ -1,0 +1,105 @@
+// =============================================================================
+//  settings.gradle
+//
+//  !! 重要 !!  Gradle 硬性规定：pluginManagement {} 必须是本文件的第一条语句，
+//  在它之前不能出现任何其它语句（连 def 都不行，会报
+//  "The pluginManagement {} block must appear before any other statements"）。
+//  因此版本矩阵只能在 pluginManagement 的块体内部读取。
+//
+//  每次构建用 -PmcVersion=<版本> 指定目标 MC 版本，settings 据此挑选
+//  Loom / ForgeGradle / NeoGradle 的插件版本，并只包含该版本真正用到的加载器子项目。
+// =============================================================================
+
+pluginManagement {
+    def pmProps = new Properties()
+    File pmFile = file('matrix.properties')
+    if (pmFile.isFile()) {
+        pmFile.withInputStream { pmProps.load(it) }
+    }
+
+    String pmRequested = gradle.startParameter.projectProperties['mcVersion']
+    String pmMc = (pmRequested ?: pmProps.getProperty('default.mcVersion', '1.20.1')).trim()
+
+    repositories {
+        gradlePluginPortal()
+        maven { name = 'Fabric';    url = 'https://maven.fabricmc.net/' }
+        maven { name = 'Forge';     url = 'https://maven.minecraftforge.net/' }
+        maven { name = 'NeoForged'; url = 'https://maven.neoforged.net/releases' }
+        mavenCentral()
+    }
+
+    // 三个插件都声明版本，实际只会解析当前加载器真正用到的那一个
+    plugins {
+        id 'fabric-loom'                                  version "${pmProps.getProperty(pmMc + '.loom', '1.4.7')}".toString()
+        id 'net.minecraftforge.gradle'                    version "${pmProps.getProperty(pmMc + '.forgeGradle', '6.0.24')}".toString()
+        id 'net.neoforged.gradle.userdev'                 version "${pmProps.getProperty(pmMc + '.neoGradle', '7.0.145')}".toString()
+    }
+
+    // ------------------------------------------------------------------
+    //  Foojay 工具链解析器（默认关闭）
+    //
+    //  作用：本地没装 JDK 17 / 21 时让 Gradle 自动下载，避免
+    //        "No matching toolchains found"。
+    //
+    //  为什么默认关：这个插件要求 Gradle 8+，而 1.19.2 的 Forge 组合跑在
+    //  Gradle 7.5.1 上（ForgeGradle 5 只支持 Gradle 7），一启用就在配置阶段失败。
+    //  而且它依赖 org.gradle.util.GradleVersion 这类内部 API，Gradle 升级后容易坏。
+    //  你自己装好 JDK 17 + JDK 21 就完全用不上它。
+    //
+    //  要启用：把下面这段的注释去掉，并同时去掉本文件末尾那段
+    //  plugins { ... } 的注释——两处必须一起改，只改一处会报
+    //  "Plugin ... was not found"（声明了却没应用，或应用了却没声明版本）。
+    // ------------------------------------------------------------------
+    // plugins {
+    //     id 'org.gradle.toolchains.foojay-resolver-convention' version "${pmProps.getProperty('foojay', '0.8.0')}".toString()
+    // }
+}
+
+// ---- pluginManagement 之后才允许写其它语句 ----
+
+// 启用 Foojay 时，这里也要同步去掉注释：
+// plugins {
+//     id 'org.gradle.toolchains.foojay-resolver-convention'
+// }
+
+def matrixProps = new Properties()
+File propsFile = file('matrix.properties')
+if (propsFile.isFile()) {
+    propsFile.withInputStream { matrixProps.load(it) }
+}
+gradle.ext.matrix = matrixProps
+
+String requestedMc = gradle.startParameter.projectProperties['mcVersion']
+String activeMc = (requestedMc ?: matrixProps.getProperty('default.mcVersion', '1.20.1')).trim()
+gradle.ext.mcVersion = activeMc
+
+// 只 include 当前真正要构建的那个加载器子项目。
+// build.bat 会额外传 -PtargetLoader=<loader>。
+// 这样构建 forge 时不会去配置 fabric（否则 Loom 也要初始化一遍，白白多花几十秒，
+// 而且多一个出错面）。
+String targetLoader = (gradle.startParameter.projectProperties['targetLoader'] ?: '').trim()
+
+List<String> activeLoaders = (matrixProps.getProperty(activeMc + '.loaders') ?: '')
+        .trim().split(/\s+/).findAll { !it.isEmpty() }
+
+List<String> includeLoaders = targetLoader ? [targetLoader] : activeLoaders
+
+rootProject.name = 'shared-playerdata'
+
+include ':core'
+
+if (includeLoaders.contains('fabric')) {
+    include ':fabric'
+}
+if (includeLoaders.contains('forge')) {
+    include ':forge'
+}
+if (includeLoaders.contains('neoforge')) {
+    include ':neoforge'
+}
+
+if (includeLoaders.isEmpty()) {
+    logger.warn("[settings] no loaders configured for MC ${activeMc} - only :core is included")
+} else {
+    logger.lifecycle("[settings] MC ${activeMc} -> projects: :core ${includeLoaders.collect { ':' + it }.join(' ')}")
+}

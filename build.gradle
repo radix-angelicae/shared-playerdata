@@ -1,0 +1,29 @@
+// 根工程：只负责读取版本矩阵、设置公共属性。本身不产出任何 jar。
+//
+// 注意：这里用了 base 插件，它自带 build / assemble / clean 等任务，
+// 所以不要再注册同名任务（会报 "Cannot add task 'build' as a task with that name already exists"）。
+plugins {
+    id 'base'
+}
+
+def matrixProps = new Properties()
+file('matrix.properties').withInputStream { matrixProps.load(it) }
+
+ext.matrix = matrixProps
+ext.mcVersion = ((findProperty('mcVersion') ?: matrixProps.getProperty('default.mcVersion')) as String).trim()
+ext.modVersion = ((findProperty('modVersion') ?: matrixProps.getProperty('mod.version', '1.0.0')) as String).trim()
+
+allprojects {
+    group = 'org.sharedplayerdata'
+    version = rootProject.ext.modVersion
+}
+
+// 版本矩阵的读取与展示在独立子工程 tools/matrix 里完成（零插件，几秒就能跑完）：
+//     gradle -p tools/matrix -q showMatrix
+//     gradle -p tools/matrix -q printMatrix
+// build.bat 就是靠它来枚举待构建组合的。
+
+// 真正的产物由各加载器子项目生成：
+//     gradle :fabric:build   -PmcVersion=1.21.1
+//     gradle :forge:build    -PmcVersion=1.20.1
+//     gradle :neoforge:build -PmcVersion=1.21.1

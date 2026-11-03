@@ -1,0 +1,62 @@
+plugins {
+    id 'java'
+    id 'net.neoforged.gradle.userdev'
+}
+
+def MATRIX = rootProject.ext.matrix
+def MC = rootProject.ext.mcVersion
+def neoForgeVersion = MATRIX.getProperty("${MC}.neoforge")
+def javaLevel = Integer.parseInt(MATRIX.getProperty("${MC}.java", '17'))
+def packFormat = MATRIX.getProperty("${MC}.packFormat", '15')
+
+if (neoForgeVersion == null) {
+    throw new GradleException("matrix.properties 缺少 ${MC}.neoforge（NeoForge 版本号）")
+}
+
+// 产物名：sharedplayerdata-<mc版本>-neoforge-<模组版本>.jar
+def jarBaseName = "sharedplayerdata-${MC}-neoforge"
+archivesBaseName = jarBaseName
+if (org.gradle.util.GradleVersion.current() >= org.gradle.util.GradleVersion.version('8.4')) {
+    base { archivesName = jarBaseName }
+}
+
+sourceSets {
+    main {
+        java {
+            srcDirs = ['src/main/java', '../core/src/main/java', '../mcbridge/src/main/java']
+        }
+    }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(javaLevel)
+    }
+}
+
+repositories {
+    mavenCentral()
+    maven { name = 'NeoForged'; url = 'https://maven.neoforged.net/releases' }
+}
+
+dependencies {
+    implementation "net.neoforged:neoforge:${neoForgeVersion}"
+}
+
+// 若你的 NeoGradle 版本要求下面这种写法（部分 7.x 早期版本），把上面那行 implementation
+// 注释掉、改用这个块即可：
+// neoForge {
+//     version = neoForgeVersion
+// }
+
+processResources {
+    inputs.property 'version', project.version
+    inputs.property 'mc', MC
+    inputs.property 'packFormat', packFormat
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand 'mod_version': project.version, 'mc': MC
+    }
+    filesMatching('pack.mcmeta') {
+        expand 'pack_format': packFormat
+    }
+}

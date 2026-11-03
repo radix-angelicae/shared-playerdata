@@ -1,0 +1,36 @@
+# =============================================================================
+#  Line endings
+#
+#  Without these rules git prints a wall of
+#      warning: in the working copy of 'X', LF will be replaced by CRLF
+#  on every "git add" on Windows, and CRLF/LF ends up inconsistent between
+#  clones. The rules below make it explicit instead of guessed.
+#
+#  The important one: batch and PowerShell files MUST stay CRLF. A .bat with
+#  LF endings can misbehave (goto/label parsing in particular), so they are
+#  pinned to CRLF rather than normalised to LF.
+# =============================================================================
+
+# Default: text files are stored as LF in the repository.
+* text=auto eol=lf
+
+# Windows scripts: keep the bytes exactly as they are. -text disables
+# normalisation, so a CRLF .bat is stored CRLF and comes back CRLF - including
+# from GitHub's "Download ZIP", which serves the stored bytes rather than a
+# checked-out copy. ("text eol=crlf" would store LF and only convert on
+# checkout, leaving the ZIP download with LF endings that batch may choke on.)
+*.bat  -text
+*.cmd  -text
+*.ps1  -text
+
+# Shell scripts: ALWAYS LF, even on a Windows checkout with core.autocrlf=true.
+# A CRLF shebang line ("#!/usr/bin/env bash\r") makes Linux exec the interpreter
+# as "/usr/bin/env bash\r" and fail with "bad interpreter". This rule overrides
+# the eol=lf default explicitly so it also survives autocrlf on Windows.
+*.sh   text eol=lf
+
+# Build outputs and binaries - never touch, never diff as text.
+*.jar  binary
+*.zip  binary
+*.png  binary
+*.gz   binary

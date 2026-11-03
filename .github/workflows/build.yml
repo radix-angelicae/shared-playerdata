@@ -1,0 +1,192 @@
+# =============================================================================
+#  Shared Player Data —— CI 构建
+#
+#  【重要】默认不会自动运行。
+#  本工作流只由 workflow_dispatch（手动在 Actions 页面点 "Run workflow"）触发，
+#  push 和 pull_request 不会触发它。原因是 matrix.properties 里的 Forge /
+#  NeoForge / Loom 版本号大多是按经验填的，未经实机构建验证，自动跑很容易
+#  大面积报红。等各组合在本地验证过之后，把下面 push / pull_request 的注释
+#  去掉即可恢复自动触发。
+#
+#  默认只构建 safe: true 的组合（已在本机验证过能产出 jar 的那几个）。
+#  手动触发时把 full 勾上才会跑全部 18 个组合。
+#
+#  【坑】matrix 上下文不能在 job 级 if 里用，只能用在工作步骤里。
+#  曾经写成 job 级 `if: ... inputs.mc == matrix.mc ...`，结果整个 workflow
+#  在解析阶段就报 "Unrecognized named-value: 'matrix'"，18 个 job 全部失败。
+#  所以组合过滤下沉成一个 gate 步骤，产出 run=true/false 给后续步骤用。
+#
+#  用 windows-latest：build.bat 只在 Windows 上做过实机验证。
+#  想换成 Linux runner，改 runs-on 并把 Build 步骤换成 ./build.sh 即可
+#  （两个脚本参数一致）。
+# =============================================================================
+
+name: Build
+
+on:
+  # push:
+  #   branches: [ main ]
+  # pull_request:
+  #   branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      mc:
+        description: 'MC version to build (leave empty for all selected)'
+        required: false
+        default: ''
+      full:
+        description: 'Build every combination, including unverified ones'
+        required: false
+        default: false
+        type: boolean
+
+# 同一分支上重复触发时取消旧任务，省额度
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    strategy:
+      # 一个组合失败不取消其他组合——正好用来看清到底是哪个版本有问题
+      fail-fast: false
+      matrix:
+        include:
+          # safe: true  = 已在本机产过 jar
+          # safe: false = 版本号尚未验证，只在勾选 full 时才构建
+          - { mc: '1.19.2',  loader: 'forge',    safe: false }
+          - { mc: '1.19.4',  loader: 'forge',    safe: false }
+          - { mc: '1.20.1',  loader: 'fabric',   safe: false }
+          - { mc: '1.20.1',  loader: 'forge',    safe: true  }
+          - { mc: '1.20.4',  loader: 'fabric',   safe: false }
+          - { mc: '1.20.4',  loader: 'forge',    safe: false }
+          - { mc: '1.20.4',  loader: 'neoforge', safe: false }
+          - { mc: '1.20.6',  loader: 'fabric',   safe: false }
+          - { mc: '1.20.6',  loader: 'forge',    safe: false }
+          - { mc: '1.20.6',  loader: 'neoforge', safe: false }
+          - { mc: '1.21.1',  loader: 'fabric',   safe: true  }
+          - { mc: '1.21.1',  loader: 'forge',    safe: false }
+          - { mc: '1.21.1',  loader: 'neoforge', safe: true  }
+          - { mc: '1.21.5',  loader: 'fabric',   safe: false }
+          - { mc: '1.21.5',  loader: 'forge',    safe: false }
+          - { mc: '1.21.5',  loader: 'neoforge', safe: false }
+          - { mc: '1.21.11', loader: 'forge',    safe: false }
+          - { mc: '1.21.11', loader: 'neoforge', safe: false }
+
+    name: ${{ matrix.mc }} / ${{ matrix.loader }}
+
+    steps:
+      # 决定是否真的构建本组合。matrix 只能在这一层用，所以放在步骤里，
+      # 用 env 传值避免把用户输入直接拼进 shell。
+      - name: Decide whether to build this combination
+        id: gate
+        shell: bash
+        env:
+          WANT_MC: ${{ inputs.mc }}
+          WANT_FULL: ${{ inputs.full }}
+          THIS_MC: ${{ matrix.mc }}
+          THIS_SAFE: ${{ matrix.safe }}
+        run: |
+          if [ -n "$WANT_MC" ] && [ "$WANT_MC" != "$THIS_MC" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "跳过：本次只要 $WANT_MC"
+            exit 0
+          fi
+          if [ "$WANT_FULL" != "true" ] && [ "$THIS_SAFE" != "true" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "跳过：$THIS_MC 尚未实机验证，勾选 full 才会构建"
+            exit 0
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+
+      # 1.19.2 ~ 1.20.4 需要 JDK 17；1.20.6 / 1.21.x 需要 JDK 21。
+      - name: Set up JDK 17 and 21
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            17
+            21
+
+      - name: Cache Gradle distribution
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: gradle-dist
+          key: gradle-dist-${{ runner.os }}-${{ matrix.mc }}-${{ matrix.loader }}
+          restore-keys: |
+            gradle-dist-${{ runner.os }}-
+
+      # Loom 反编译产物、Forge userdev 都在 ~/.gradle 下，是最耗时的一步。
+      - name: Cache Gradle dependencies
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ matrix.mc }}-${{ matrix.loader }}-${{ hashFiles('matrix.properties', 'gradle.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-${{ matrix.mc }}-${{ matrix.loader }}-
+            gradle-${{ runner.os }}-${{ matrix.mc }}-
+            gradle-${{ runner.os }}-
+
+      # 本机构建走 127.0.0.1:10808 代理，CI runner 有直连外网，配了反而连不上。
+      - name: Remove local proxy settings
+        if: steps.gate.outputs.run == 'true'
+        shell: pwsh
+        run: |
+          $f = 'gradle.properties'
+          $kept = Get-Content $f | Where-Object { $_ -notmatch 'proxyHost|proxyPort' }
+          Set-Content -Path $f -Value $kept -Encoding UTF8
+          Write-Host "gradle.properties proxy lines removed"
+
+      - name: Build ${{ matrix.mc }} / ${{ matrix.loader }}
+        if: steps.gate.outputs.run == 'true'
+        run: build.bat ${{ matrix.mc }} ${{ matrix.loader }} --no-proxy --no-pause
+        shell: cmd
+
+      - name: Upload jar
+        if: steps.gate.outputs.run == 'true' && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sharedplayerdata-${{ matrix.mc }}-${{ matrix.loader }}
+          path: build/artifacts/*.jar
+          if-no-files-found: warn
+          retention-days: 14
+
+      # 失败时把最关键的信息打进 step 摘要，不用下载 artifact 也能看到原因
+      - name: Summarise failure
+        if: failure()
+        shell: pwsh
+        env:
+          THIS_MC: ${{ matrix.mc }}
+          THIS_LOADER: ${{ matrix.loader }}
+        run: |
+          $lines = @(
+            "组合 $env:THIS_MC / $env:THIS_LOADER 构建失败。",
+            "",
+            "最常见原因是 matrix.properties 里的版本号在该仓库中不存在：",
+            "  * Fabric   -> Loom 版本不存在（改 [mc].loom）",
+            "  * Forge    -> Forge 版本不存在（改 [mc].forge）",
+            "  * NeoForge -> 版本不存在（改 [mc].neoforge）",
+            "",
+            "版本号查询：",
+            "  * https://files.minecraftforge.net/",
+            "  * https://neoforged.net/",
+            "  * https://maven.fabricmc.net/net/fabricmc/fabric-loom/",
+            "",
+            "也可能是 Gradle 版本太低，加一行  $env:THIS_MC.gradle=8.13  再试。",
+            "完整日志见本 job 的 Build 步骤。",
+            "",
+            "版本号修正后，在 Actions 页面手动 Run workflow，mc 填 $env:THIS_MC 即可只重试这一个。"
+          )
+          $lines | ForEach-Object { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $_ }

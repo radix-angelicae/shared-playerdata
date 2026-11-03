@@ -1,0 +1,6 @@
+{
+  "pack": {
+    "description": "Shared Player Data",
+    "pack_format": ${pack_format}
+  }
+}

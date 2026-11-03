@@ -1,0 +1,18 @@
+build/
+.gradle/
+out/
+*/build/
+*/run/
+*/.gradle/
+# 自动下载的 Gradle / JDK（首次运行 build.bat 或 build.sh 时生成）
+gradle-dist/
+jdk-dist/
+jdk/
+gradle.zip
+gradle-*/
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.DS_Store
