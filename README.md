@@ -116,8 +116,13 @@ Minecraft **26.1** 起官方改了机制：`level.dat` 里的 `Player` 复合标
 - 谁在这个世界里都没有数据、且内嵌数据的 UUID 无法辨认时，模组**保留**内嵌数据，
   不会把存档变成空号。
 
-模组还会在后台常驻：只要你在主菜单（不在世界里），每 15 秒重新扫描一次，
-所以新导入的存档不必重启游戏。
+模组还会在后台常驻：只要**存档目录发生变化**（复制进来新存档、退出世界后
+游戏保存了 level.dat），就会在确认停在主菜单后重新扫描一次。
+所以运行中导入的新存档不必重启游戏，放进去等几秒再进世界即可。
+
+> 出问题时可以一键让它彻底停工，用来确认症状是否由它引起：
+> 在 `.minecraft` 目录里放一个名为 `spd.disable` 的空文件，
+> 或给启动参数加 `-Dsharedplayerdata.disable=true`。
 
 ## 五、目录结构
 
@@ -199,8 +204,33 @@ shared-playerdata/
 | 下载 Gradle 分发包本身 | `build.bat` 顶部的 `PROXY_HOST` / `PROXY_PORT` |
 | `update_versions.py` 抓版本号 | 脚本内的 `PROXY` 常量 |
 
-**换端口**：改 `gradle.properties` 里的 4 行 `proxyPort`，以及 `build.bat` 的
-`PROXY_PORT`。
+**脚本会先探活**：构建开始前（甚至在下载 Gradle 之前）先连一次
+`127.0.0.1:10808`。代理客户端没开就直接退出并给出三条可选做法，
+不会再让 ForgeGradle / Loom 对几十个 artifact 逐个重试、打满
+`Connection refused` 堆栈还看起来像卡死。
+
+**代理没开 / 想直连**：
+
+```bat
+build.bat --no-proxy
+```
+
+`--no-proxy` 会通过 `tools/proxy.gradle` 这个 init script **真正清掉**
+`gradle.properties` 注入的 JVM 代理属性（并重置 JDK 缓存的 `ProxySelector`）。
+早期版本只清了「下载 Gradle 分发包」用的 `SPD_PROXY`，那 4 行 `systemProp.*`
+仍在生效，所以直连模式名不副实——已修。
+
+**换端口不用改文件**：
+
+```bat
+set SPD_PROXY_HOST=127.0.0.1
+set SPD_PROXY_PORT=7890
+build.bat
+```
+
+两个脚本都支持；覆盖会同时作用于 Gradle 分发包下载和依赖下载。
+当然也可以直接改 `gradle.properties` 的 4 行 `proxyPort`
+和 `build.bat` 顶部的 `PROXY_PORT`。
 
 **你的 10808 是 SOCKS5 而不是 HTTP** 的话，把 `gradle.properties` 里那几行换成：
 
@@ -209,10 +239,8 @@ systemProp.socksProxyHost=127.0.0.1
 systemProp.socksProxyPort=10808
 ```
 
-**临时不走代理**：先执行 `set SPD_PROXY=` 再运行 `build.bat`。
-
-> 改完代理配置后，脚本会先执行一次 `gradle --stop` 再构建——正在运行的 daemon
-> 不会感知 `gradle.properties` 的改动，不重启的话新设置不生效。
+> 脚本每次构建前会先执行一次 `gradle --stop`：正在运行的 daemon 不会感知
+> `gradle.properties` 的改动，不重启的话新设置不生效。
 
 走代理之后访问官方仓库已经足够快，所以默认**不启用**国内镜像（`--mirrors` 可开启）。
 
@@ -548,9 +576,21 @@ java -jar sharedplayerdata-core.jar "/Users/me/Library/Application Support/minec
 
 * 只处理「单人 / 局域网房主」场景。玩家数据本来就是按 UUID 分开存的纯净服务端不受此问题影响。
 * 必须在**第一次打开收到的存档之前**就装好模组，否则你自己的数据可能已被覆盖（见上文恢复办法）。
-* 扫描发生在**游戏启动阶段**，之后只要你在主菜单就会每 15 秒自动重扫一次，
-  所以运行中导入的新存档回到主菜单即可生效，不必重启游戏。
-  在世界中时不会动任何文件（那时游戏正在读写 level.dat）。
+* 扫描由**存档目录指纹变化**触发：每 1.5 秒算一次所有世界的
+  「名字 + level.dat 的 mtime/size」，变了才需要扫；没变就完全不碰文件。
+  启动后必扫一次；运行中复制存档进来、退出世界后游戏保存，都能触发。
+* **静止闸**：必须连续多次读到「不在世界」才动手。进入或创建世界的过程中
+  `mc.level` 有相当长一段是 null，若被当成「在主菜单」，扫描线程就会和游戏
+  同时读写同一个 level.dat，表现为卡在「正在进入世界」——大型整合包必现。
+* **写回前重新校验指纹**：从读到写之间 level.dat 若被游戏改动过，
+  就放弃本轮、下次再处理。这是防抢文件的精确防线。
+* 曾经有一层「level.dat 在 5 秒内被改过就整个跳过」的保护，已删除：
+  退出世界时游戏必然刚保存过 level.dat，刚复制进来的存档也是「刚改过」，
+  它把这两种正常场景全部误杀，导致修正永远不发生。按年龄猜不可靠，
+  改用上面那次精确的指纹校验。
+* 日志会逐轮打印「扫描完成 / 修正 N 个 / 跳过 N 个」，并对每个非 CLEAN 的
+  存档单独列出结果与原因。功能没生效时先看 `logs/latest.log` 里
+  `[SharedPlayerData/...]` 开头的行，能直接区分「没扫」和「扫了没改」。
 * Forge / NeoForge 侧在 **`FMLLoadCompleteEvent`（mod 加载完成）之后**才启动扫描线程，
   再由线程轮询等待 Minecraft 实例就绪（最长 3 分钟）。
   **绝不能**在 `@Mod` 构造函数里启动：那里还在 mod loading 阶段，此时去调
@@ -565,7 +605,7 @@ java -jar sharedplayerdata-core.jar "/Users/me/Library/Application Support/minec
   Fabric 需要装了 Fabric API；Forge / NeoForge 需要存在 `RegisterClientCommandsEvent`。
   挂不上只是没有命令，日志里会写明原因，存档修正不受任何影响。
 * 扫描结果按 `level.dat` 的「修改时间 + 大小」做指纹缓存，指纹没变就复用上次结果，
-  所以看门狗每 15 秒高频扫描时几乎不耗资源。
+  所以存档目录频繁触发重新扫描时几乎不耗资源。
 
 ## 十二、提交到 GitHub
 
@@ -625,7 +665,8 @@ push.bat --dry-run        :: 只看会提交什么，不提交
 * **CI 里去掉代理**：`gradle.properties` 里的 `systemProp.*.proxy*` 指向 `127.0.0.1:10808`
   （你本机的代理），runner 上没有。workflow 会先删掉这些行，
   再用 `build.bat <mc> <loader> --no-proxy --no-pause` 构建。
-  `--no-proxy` 是为此新增的参数，只影响 Gradle 分发包的下载，本地行为不变。
+  `--no-proxy` 现在会加载 `tools/proxy.gradle` 彻底清空 JVM 代理属性，
+  和删行是双保险；`--no-proxy` 也会跳过本地的代理端口探活。
 * **缓存**：`gradle-dist/` 与 `~/.gradle/caches` 都做了缓存。
   依赖缓存按「MC 版本 + 加载器」分开存——Loom 反编译和 Forge userdev 的产物很大，
   混在一起会互相挤掉。

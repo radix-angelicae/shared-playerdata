@@ -7,6 +7,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.User;
 import org.sharedplayerdata.core.CommandHook;
 import org.sharedplayerdata.core.SpdLog;
+import org.sharedplayerdata.core.SpdPlatform;
 import org.sharedplayerdata.core.SpdRuntime;
 
 /**
@@ -40,6 +41,8 @@ public final class ClientScanner {
      * 确保 mod loading 早已结束，再开始触碰 Minecraft 类。
      */
     private static final long FALLBACK_DELAY_MILLIS = 60_000L;
+    /** 开始轮询前的缓冲，让主线程先把 Minecraft 初始化完。 */
+    private static final long GRACE_MILLIS = 5000L;
 
     private static final AtomicBoolean STARTED = new AtomicBoolean(false);
 
@@ -78,6 +81,17 @@ public final class ClientScanner {
     }
 
     private static void run() {
+        // 先等一小会儿再开始轮询。FMLLoadComplete 触发时，主线程往往正处于
+        // Minecraft 类的构造 / 初始化过程中；此刻本线程若抢先调用
+        // Minecraft.getInstance()，就会由本线程来触发 Minecraft 的静态初始化，
+        // 与主线程互相持有类初始化锁而死锁。让主线程先跑一段，本线程就只会读到
+        // 已经初始化好的实例，不再有竞争。
+        try {
+            Thread.sleep(GRACE_MILLIS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
+        }
         long deadline = System.currentTimeMillis() + TIMEOUT_MILLIS;
         while (System.currentTimeMillis() < deadline) {
             try {
@@ -88,9 +102,23 @@ public final class ClientScanner {
                     if (uuid != null) {
                         PlatformImpl.install();
                         SpdRuntime.init(mc.gameDirectory.toPath(), uuid);
-                        CommandHook.tryRegister();
-                        SpdRuntime.scan();
-                        SpdRuntime.startWatcher();
+                        if (SpdRuntime.disabled()) {
+                            SpdLog.warn("已被 spd.disable 关闭，本次不做任何扫描");
+                            return;
+                        }
+                        if (SpdPlatform.available()) {
+                            // 扫描交给看门狗：它会先确认「确实停在主菜单」再动手。
+                            // 这里不能立刻扫——此刻游戏可能正在加载 / 创建世界，
+                            // 而加载期间 mc.level 为 null，直接扫就会和游戏抢
+                            // level.dat，表现为进入世界时卡死。
+                            // 命令注册也一并推迟到那时，避免在世界加载阶段
+                            // 从本线程去初始化 Forge / NeoForge 的事件总线类。
+                            SpdRuntime.startWatcher();
+                        } else {
+                            // 拿不到桥接层就没有看门狗，只能在这里补一次（启动时，安全）
+                            CommandHook.tryRegister();
+                            SpdRuntime.scan();
+                        }
                         return;
                     }
                 }

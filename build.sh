@@ -19,7 +19,8 @@
 #
 #  All downloads go through the proxy at 127.0.0.1:10808, which is configured
 #  in gradle.properties (systemProp.*) and passed to the Gradle downloader.
-#  Override with SPD_PROXY, or disable with SPD_PROXY= (or --no-proxy).
+#  Override with SPD_PROXY / SPD_PROXY_HOST / SPD_PROXY_PORT, or disable with
+#  --no-proxy. build.sh probes the port first and aborts early if it is down.
 #
 #  NOTE: "set -e" is deliberately NOT used. One combination failing must not
 #  abort the whole loop, and a bare "grep" that matches nothing would silently
@@ -64,7 +65,7 @@ usage() {
   ./build.sh --no-mirrors      use official repos (this is the default)
   ./build.sh --stacktrace      full stack traces on failure
   ./build.sh --no-stop         keep the Gradle daemons running afterwards
-  ./build.sh --no-proxy        download Gradle directly (skip the local proxy)
+  ./build.sh --no-proxy        build with NO proxy at all (direct connection)
   ./build.sh --stop            stop every Gradle daemon and exit (no build)
 
 EOF
@@ -81,6 +82,9 @@ Usual causes:
       1.21.5.gradle=8.13   to matrix.properties
   * JDK too old (need 17+), or a dependency could not be downloaded
     - retry with:  ./build.sh --no-mirrors
+  * Connection refused / Failed download after 3 attempts:
+    - the proxy at 127.0.0.1:10808 is down; start it, or use
+      ./build.sh --no-proxy, or SPD_PROXY_PORT=your_port ./build.sh
   * "No matching toolchains found": install JDK 17 (for 1.19-1.20.4)
     and JDK 21 (for 1.20.6-1.21.x), or enable the Foojay resolver
     (see the comment in settings.gradle)
@@ -237,9 +241,51 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-# --no-proxy: skip the download proxy. gradle.properties still has its own
-# systemProp.* entries; CI strips those separately.
+# ---------------------------------------------------------------- proxy control
+# gradle.properties routes EVERY download through 127.0.0.1:10808. The 4
+# systemProp.* lines live in the Gradle JVM, so clearing only SPD_PROXY is not
+# enough -- tools/proxy.gradle neutralises them via -Dspd.proxyMode=off.
 [ "$NO_PROXY" = "1" ] && SPD_PROXY=""
+
+# Only treat these as overrides when the user actually exported them. Using
+# ${VAR:=default} would set them unconditionally and silently rewrite SPD_PROXY.
+HOST_OVERRIDE=0
+PORT_OVERRIDE=0
+if [ -n "${SPD_PROXY_HOST+x}" ]; then PROXY_HOST="$SPD_PROXY_HOST"; HOST_OVERRIDE=1; fi
+if [ -n "${SPD_PROXY_PORT+x}" ]; then PROXY_PORT="$SPD_PROXY_PORT"; PORT_OVERRIDE=1; fi
+
+PROXY_INIT="-I $PWD/tools/proxy.gradle"
+PROXY_ARGS=""
+if [ "$NO_PROXY" = "1" ]; then
+    PROXY_ARGS="-Dspd.proxyMode=off"
+else
+    if [ "$HOST_OVERRIDE" = "1" ]; then PROXY_ARGS="$PROXY_ARGS -Dspd.proxyHost=$PROXY_HOST"; fi
+    if [ "$PORT_OVERRIDE" = "1" ]; then PROXY_ARGS="$PROXY_ARGS -Dspd.proxyPort=$PROXY_PORT"; fi
+    if [ "$HOST_OVERRIDE" = "1" ] || [ "$PORT_OVERRIDE" = "1" ]; then
+        SPD_PROXY="http://$PROXY_HOST:$PROXY_PORT"
+    fi
+fi
+
+# Probe BEFORE downloading Gradle itself. When the proxy is down, ForgeGradle /
+# Loom retry dozens of artifacts and print a wall of "Connection refused"
+# stacks, which looks exactly like a hang. --stop / --list need no network.
+if [ "$STOP_ONLY" != "1" ] && [ "$DO_LIST" != "1" ] && [ "$NO_PROXY" != "1" ]; then
+    if ! timeout 3 bash -c "exec 3<>/dev/tcp/$PROXY_HOST/$PROXY_PORT" 2>/dev/null; then
+        echo ""
+        echo "[proxy] ERROR: cannot reach $PROXY_HOST:$PROXY_PORT"
+        echo "[proxy] gradle.properties sends EVERY download through this proxy."
+        echo "[proxy] With it down Gradle prints a wall of Connection refused stacks"
+        echo "[proxy] and appears to hang, so the build is aborted here."
+        echo ""
+        echo "[proxy] Pick one:"
+        echo "[proxy]   1. Start your proxy client, then run ./build.sh again"
+        echo "[proxy]   2. Build without the proxy:  ./build.sh --no-proxy"
+        echo "[proxy]   3. Use a different port:    SPD_PROXY_PORT=7890 ./build.sh"
+        echo ""
+        exit 1
+    fi
+    echo "[proxy] reachable: $PROXY_HOST:$PROXY_PORT"
+fi
 
 # ---------------------------------------------------------------- sanity checks
 if [ ! -f matrix.properties ]; then
@@ -410,7 +456,7 @@ for row in "${ROWS[@]}"; do
 
     # shellcheck disable=SC2086
     if ! "$CUR_GRADLE_BIN" ":$loader:build" -PmcVersion="$mc" -PtargetLoader="$loader" \
-            --console=plain $INIT_ARG $EXTRA_ARGS; then
+            --console=plain $INIT_ARG $PROXY_INIT $PROXY_ARGS $EXTRA_ARGS; then
         echo "    [FAILED] $mc / $loader (continuing with the next one)"
         FAILED="$FAILED $mc/$loader"
         continue

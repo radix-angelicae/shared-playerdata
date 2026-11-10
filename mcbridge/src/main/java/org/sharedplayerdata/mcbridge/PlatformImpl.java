@@ -1,8 +1,11 @@
 package org.sharedplayerdata.mcbridge;
 
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
+import org.sharedplayerdata.core.SpdLog;
 import org.sharedplayerdata.core.SpdPlatform;
 
 /**
@@ -19,6 +22,9 @@ import org.sharedplayerdata.core.SpdPlatform;
  * 所以这份代码可以直接以源码形式并入三个工程。</p>
  */
 public final class PlatformImpl implements SpdPlatform {
+
+    /** isInWorld() 抛异常时限频报一次，避免刷屏。 */
+    private static final AtomicBoolean WARNED = new AtomicBoolean(false);
 
     private PlatformImpl() {
     }
@@ -40,8 +46,21 @@ public final class PlatformImpl implements SpdPlatform {
     public boolean isInWorld() {
         try {
             Minecraft mc = Minecraft.getInstance();
-            return mc != null && mc.level != null;
+            if (mc == null) {
+                return true;
+            }
+            // 两个都判：level 是在世界里的直接证据，player 是补充。
+            // 只要有一个成立就认为在世界中——判成「在世界中」只会让本轮不扫描，
+            // 是安全方向；反过来（漏判成不在世界）才会在加载世界时抢文件。
+            return mc.level != null || mc.player != null;
         } catch (Throwable t) {
+            // 拿不到就按「在世界中」处理，宁可不扫描也不要抢文件。
+            // 但如果持续抛异常，看门狗会永远认为在世界里、永远不扫描，
+            // 所以报一次日志，方便定位「功能静默失效」。
+            if (WARNED.compareAndSet(false, true)) {
+                SpdLog.warn("读取 Minecraft 状态失败，看门狗将保守地不扫描存档："
+                        + SpdLog.stackTraceOf(t));
+            }
             return true;
         }
     }

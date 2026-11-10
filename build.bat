@@ -20,6 +20,8 @@
 @rem
 @rem  All downloads go through the proxy at 127.0.0.1:10808, which is configured
 @rem  in gradle.properties (systemProp.*) and passed to the Gradle downloader.
+@rem  build.bat probes that port first and aborts with a clear message when the
+@rem  proxy is down; --no-proxy builds with no proxy at all.
 @rem ===========================================================================
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
@@ -98,9 +100,54 @@ shift
 goto :parse
 :parsed
 
-@rem Honour --no-proxy: clear the download proxy (gradle.properties still has
-@rem its own systemProp.* entries; CI strips those separately).
+@rem Honour --no-proxy: clear the download proxy. The 4 systemProp.* lines in
+@rem gradle.properties are neutralised by tools\proxy.gradle (see PROXY_INIT
+@rem below) - clearing only SPD_PROXY here would leave them active and the
+@rem build would still hit 127.0.0.1:10808.
 if "!NO_PROXY!"=="1" set "SPD_PROXY="
+
+@rem ---------------------------------------------------------------- proxy control
+@rem Optional overrides, applied to BOTH the Gradle distribution download and
+@rem the dependency downloads, so a different port needs no file edits.
+if defined SPD_PROXY_HOST set "PROXY_HOST=!SPD_PROXY_HOST!"
+if defined SPD_PROXY_PORT set "PROXY_PORT=!SPD_PROXY_PORT!"
+if defined SPD_PROXY_HOST set "SPD_PROXY=http://!PROXY_HOST!:!PROXY_PORT!"
+if defined SPD_PROXY_PORT set "SPD_PROXY=http://!PROXY_HOST!:!PROXY_PORT!"
+
+set PROXY_INIT=-I "%~dp0tools\proxy.gradle"
+set "PROXY_ARGS="
+if "!NO_PROXY!"=="1" (
+    set "PROXY_ARGS=-Dspd.proxyMode=off"
+) else (
+    if defined SPD_PROXY_HOST set "PROXY_ARGS=!PROXY_ARGS! -Dspd.proxyHost=!SPD_PROXY_HOST!"
+    if defined SPD_PROXY_PORT set "PROXY_ARGS=!PROXY_ARGS! -Dspd.proxyPort=!SPD_PROXY_PORT!"
+)
+
+@rem Probe the proxy BEFORE downloading Gradle itself. gradle.properties routes
+@rem EVERY download through 127.0.0.1:10808; when that port is not listening,
+@rem ForgeGradle / Loom retry dozens of artifacts and print a wall of
+@rem "Connection refused" stacks, which looks exactly like a hang.
+@rem --stop / --list need no network, --no-proxy explicitly opts out.
+if "%STOP_ONLY%"=="1" goto :proxy_ready
+if "%DO_LIST%"=="1" goto :proxy_ready
+if "!NO_PROXY!"=="1" goto :proxy_ready
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\check-proxy.ps1" -TargetHost "%PROXY_HOST%" -Port %PROXY_PORT% -TimeoutMs 1200 >nul 2>&1
+if not errorlevel 1 goto :proxy_ok
+echo.
+echo [proxy] ERROR: cannot reach %PROXY_HOST%:%PROXY_PORT%
+echo [proxy] gradle.properties sends EVERY download through this proxy.
+echo [proxy] With it down Gradle prints a wall of Connection refused stacks
+echo [proxy] and appears to hang, so the build is aborted here.
+echo.
+echo [proxy] Pick one:
+echo [proxy]   1. Start your proxy client, then run build.bat again
+echo [proxy]   2. Build without the proxy:  build.bat --no-proxy
+echo [proxy]   3. Use a different port:    set SPD_PROXY_PORT=7890
+echo.
+goto :end_fail
+:proxy_ok
+echo [proxy] reachable: %PROXY_HOST%:%PROXY_PORT%
+:proxy_ready
 
 @rem ---------------------------------------------------------------- sanity checks
 if not exist matrix.properties (
@@ -238,7 +285,7 @@ for /f "usebackq tokens=1,2,3,4 delims=|" %%A in ("%MATRIX_TXT%") do (
         echo     [FAILED] %%A / %%B - could not obtain Gradle %%C
         set "FAILED=!FAILED! %%A/%%B"
     ) else (
-        call "!CUR_GRADLE_BIN!" ":%%B:build" -PmcVersion=%%A -PtargetLoader=%%B --console=plain !INIT_ARG! !EXTRA_ARGS!
+        call "!CUR_GRADLE_BIN!" ":%%B:build" -PmcVersion=%%A -PtargetLoader=%%B --console=plain !INIT_ARG! !PROXY_INIT! !PROXY_ARGS! !EXTRA_ARGS!
         if errorlevel 1 (
             echo     [FAILED] %%A / %%B ^(continuing with the next one^)
             set "FAILED=!FAILED! %%A/%%B"
@@ -284,6 +331,9 @@ if defined FAILED (
     echo     1.21.5.gradle=8.13   to matrix.properties
     echo   * JDK too old ^(need 17+^), or a dependency could not be downloaded
     echo     - retry with:  build.bat --no-mirrors
+    echo   * Connection refused / Failed download after 3 attempts:
+    echo     - the proxy at 127.0.0.1:10808 is down; start it, or use
+    echo       build.bat --no-proxy, or set SPD_PROXY_PORT=your port
     echo   * "No matching toolchains found": install JDK 17 ^(for 1.19-1.20.4^)
     echo     and JDK 21 ^(for 1.20.6-1.21.x^), or enable the Foojay resolver
     echo     ^(see the comment in settings.gradle^)
@@ -424,8 +474,12 @@ echo   build.bat --no-mirrors      use official repos (this is now the default)
 echo   build.bat --mirrors         use the China mirror init script instead
 echo   build.bat --stacktrace      full stack traces on failure
 echo   build.bat --no-stop         keep the Gradle daemons running afterwards
-echo   build.bat --no-proxy        download Gradle directly (skip the local proxy)
+echo   build.bat --no-proxy        build with NO proxy at all (direct connection)
 echo   build.bat --stop            stop every Gradle daemon and exit (no build)
+echo.
+echo   Proxy: gradle.properties routes all downloads through 127.0.0.1:10808.
+echo   Override without editing files:  set SPD_PROXY_HOST=127.0.0.1
+echo                                   set SPD_PROXY_PORT=7890
 echo.
 exit /b 0
 

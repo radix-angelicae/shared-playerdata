@@ -102,8 +102,9 @@ public final class LevelDatFixer {
     /**
      * 扫描缓存：key 是世界目录，value 是「上次扫描时的文件指纹 + 报告」。
      *
-     * <p>看门狗每 15 秒扫一次全量存档，每次都解压并解析一遍 level.dat 在存档多的时候
-     * 会明显卡顿。而 level.dat 绝大多数时间根本没变，所以指纹相同就直接复用上次的结果。</p>
+     * <p>看门狗在存档目录发生变化时会重新扫描，每次都解压并解析一遍 level.dat，
+     * 存档多的时候会明显卡顿。而单个 level.dat 绝大多数时间根本没变，
+     * 所以指纹相同就直接复用上次的结果。</p>
      *
      * <p>指纹 = 最后修改时间 + 文件大小。模组自己写回文件后指纹必然变化，
      * 所以不会出现「改了却还用旧结果」的情况。</p>
@@ -128,6 +129,7 @@ public final class LevelDatFixer {
             return -1L;
         }
     }
+
 
     /** 供外部（比如改了存档之后）清空缓存。 */
     public static void clearCache() {
@@ -251,6 +253,10 @@ public final class LevelDatFixer {
             }
         }
 
+        // 这里曾经有一段「level.dat 在 5 秒内被改过就整个跳过」的保护，已删除。
+        // 它把「刚复制进来的存档」和「刚退出世界、游戏刚保存完的存档」全部误杀，
+        // 结果就是修正永远不发生。真正需要防的是「读取之后文件又被改动」，
+        // 由下面写回前的指纹校验精确处理，不需要按年龄猜。
         Tag root;
         try {
             root = NbtIo.readCompressed(levelDat);
@@ -373,19 +379,35 @@ public final class LevelDatFixer {
         } else if (!apply) {
             report.result = Result.FIXED;
         } else {
-            // 自己的数据已在上面备份过，这里直接写回
-            try {
-                writeAtomically(root, levelDat);
-                report.result = Result.FIXED;
-                // FIXED 不进缓存：这次刚改过文件，embeddedOwner 还是改之前的值，
-                // 缓存下来会让 /spd status 一直显示旧状态、scan() 重复计数。
-                SCAN_CACHE.remove(worldDir);
-                SpdLog.info("已清除存档「" + report.name + "」中属于其他玩家的数据：" + reasons
-                        + "→ 现在会以你自己的 UUID(" + localUuid + ") 读取玩家数据");
-            } catch (IOException e) {
-                SpdLog.error("写回 level.dat 失败：" + levelDat, e);
-                report.notes.add("写回 level.dat 失败");
+            // 自己的数据已在上面备份过，这里直接写回。
+            //
+            // 写回前必须再验一次指纹：从「读 level.dat」到「写 level.dat」之间是有
+            // 时间差的，而这段时间里游戏可能刚好在写这个文件（进入世界、自动保存、
+            // 离开世界时的最后一次保存）。如果指纹变了，说明我们手里这份 tag 已经是
+            // 旧版本，此刻写回去会把游戏刚写的内容覆盖掉——轻则丢进度，重则让
+            // 游戏正在进行的世界加载读到互相矛盾的数据而卡住。
+            // 所以指纹不符就放弃这一轮，下次扫描再来。
+            long nowStamp = stampOf(levelDat);
+            if (stamp >= 0 && nowStamp >= 0 && nowStamp != stamp) {
                 report.result = Result.SKIPPED;
+                report.notes.add("level.dat 在读取之后又被游戏改动过，本轮放弃修改（下次扫描再处理）");
+                SCAN_CACHE.remove(worldDir);
+                SpdLog.warn("存档「" + report.name + "」的 level.dat 在读取之后又被改动，"
+                        + "本轮放弃写回（游戏可能正在加载这个世界）");
+            } else {
+                try {
+                    writeAtomically(root, levelDat);
+                    report.result = Result.FIXED;
+                    // FIXED 不进缓存：这次刚改过文件，embeddedOwner 还是改之前的值，
+                    // 缓存下来会让 /spd status 一直显示旧状态、scan() 重复计数。
+                    SCAN_CACHE.remove(worldDir);
+                    SpdLog.info("已清除存档「" + report.name + "」中属于其他玩家的数据：" + reasons
+                            + "→ 现在会以你自己的 UUID(" + localUuid + ") 读取玩家数据");
+                } catch (IOException e) {
+                    SpdLog.error("写回 level.dat 失败：" + levelDat, e);
+                    report.notes.add("写回 level.dat 失败");
+                    report.result = Result.SKIPPED;
+                }
             }
         }
 
@@ -396,7 +418,8 @@ public final class LevelDatFixer {
                     .append("直接进去会是空号。");
             if (!report.availableUuids.isEmpty()) {
                 hint.append(" 该世界现存 ").append(report.availableUuids.size())
-                        .append(" 份数据，用 /spd list 查看，再用 /spd adopt <uuid> 认领属于你的那份");
+                        .append(" 份数据，用 /spd list 查看，")
+                        .append("再把属于你的那份复制成 <你的UUID>.dat");
                 if (report.availableUuids.size() <= 4) {
                     hint.append("：");
                     for (UUID u : report.availableUuids) {
